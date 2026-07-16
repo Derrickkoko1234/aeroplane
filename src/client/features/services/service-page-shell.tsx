@@ -4,6 +4,7 @@ import {
   Cancel01Icon,
   Delete02Icon,
   DatabaseIcon,
+  FileCodeIcon,
   FolderOpenIcon,
   GithubIcon,
   Globe02Icon,
@@ -37,8 +38,10 @@ import { githubBranchesCache, githubDirectoriesCache, githubReposCache } from ".
 import { DirectoryPickerModal } from "../../components/modals/directory-picker";
 import { SourcePickerModal } from "../../components/modals/source-picker";
 import { TransferServiceModal } from "../../components/modals/transfer-service-modal";
+import { ConfirmationDialog } from "../../components/modals/confirmation-dialog";
 import { DatabaseServiceSettingsPanel } from "../../components/modals/database-service-settings-panel";
 import { DockerImageServiceSettingsPanel } from "../../components/modals/docker-image-service-settings-panel";
+import { FunctionServiceSettingsPanel } from "../../components/modals/function-service-settings-panel";
 import { DatabaseBackupsPanel } from "../../components/modals/database-backups-panel";
 import { DatabaseBrowserPanel } from "../../components/modals/database-browser-panel";
 import { DatabaseSqlConsolePanel } from "../../components/modals/database-sql-console-panel";
@@ -50,12 +53,14 @@ import { ServiceVariablesPanel } from "./service-variables-panel";
 import { formatBuildDuration } from "./service-format";
 import { RuntimeLogsPanel } from "./service-log-panels";
 import { ServiceOverviewPanel } from "./service-overview-panel";
+import { FunctionSourcePanel } from "./function-source-panel";
 import { ServicePageSkeleton } from "./service-page-skeleton";
 import { RedeployRequiredToast } from "./redeploy-required-toast";
 import { BuildMethodControl } from "../../components/ui/build-method-control";
 import { RuntimeModeControl } from "../../components/ui/runtime-mode-control";
 import type { ServiceTab } from "./service-tabs";
 import { dockerImageForService, dockerImageRepoFullName, isDatabaseService, isDockerImageService } from "../../../shared/service-source";
+import { isFunctionService } from "../../../shared/service-functions";
 import { deploymentIsPending, mergeDeploymentList } from "../../lib/deployment-status";
 
 function textOrNull(value: string) {
@@ -121,6 +126,7 @@ const serviceTabLabels: Record<ServiceTab, string> = {
   logs: "Logs",
   environment: "Variables",
   domains: "Domains",
+  source: "Source Code",
   data: "Data",
   sql: "Console",
   backups: "Backups",
@@ -128,7 +134,7 @@ const serviceTabLabels: Record<ServiceTab, string> = {
 };
 
 function actionRequiresRedeploy(label: string) {
-  return label === "env" || label === "settings";
+  return label === "env" || label === "settings" || label === "source";
 }
 
 export function ServicePageShell({
@@ -180,6 +186,7 @@ export function ServicePageShell({
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sourceQuery, setSourceQuery] = useState("");
   const [sourceRepos, setSourceRepos] = useState<GitHubRepo[]>([]);
   const [sourceLoading, setSourceLoading] = useState(false);
@@ -238,6 +245,7 @@ export function ServicePageShell({
 
   useEffect(() => {
     settingsServiceIdRef.current = null;
+    setDeleteDialogOpen(false);
     void loadOverview();
     void loadSuggestionKeys();
   }, [loadOverview, loadSuggestionKeys, serviceId]);
@@ -319,7 +327,13 @@ export function ServicePageShell({
   }, [selectedTab, serviceId]);
 
   useEffect(() => {
-    if (selectedTab !== "settings" || !settings.repoFullName || settings.repoFullName.startsWith("database:") || settings.repoFullName.startsWith("image:")) return;
+    if (
+      selectedTab !== "settings" ||
+      !settings.repoFullName ||
+      settings.repoFullName.startsWith("database:") ||
+      settings.repoFullName.startsWith("image:") ||
+      settings.repoFullName.startsWith("function:")
+    ) return;
     let cancelled = false;
 
     void (async () => {
@@ -375,7 +389,7 @@ export function ServicePageShell({
   }, [selectedTab, sourcePickerOpen, sourceQuery]);
 
   useEffect(() => {
-    if (selectedTab !== "settings" || isDockerImage || !directoryPickerOpen || !settings.repoFullName || !settings.branch) return;
+    if (selectedTab !== "settings" || isDockerImage || settings.repoFullName.startsWith("function:") || !directoryPickerOpen || !settings.repoFullName || !settings.branch) return;
     if (settingsDirectoryNodes[""]) return;
     void loadSettingsDirectoryLevel("");
   }, [selectedTab, directoryPickerOpen, settings.repoFullName, settings.branch, settingsDirectoryNodes]);
@@ -480,17 +494,23 @@ export function ServicePageShell({
     await doAction("settings", async () => {
       await api.updateService(serviceId, {
         name: submittedSettings.name,
-        repoFullName: isDatabase ? submittedSettings.repoFullName : isDockerImage ? dockerImageRepoFullName(submittedSettings.dockerImage) : (submittedSettings.repoFullName.trim() ? submittedSettings.repoFullName : null),
-        repoUrl: isDatabase ? undefined : isDockerImage ? "docker-image" : (submittedSettings.repoFullName.trim() ? undefined : submittedSettings.repoUrl.trim() || undefined),
+        repoFullName: isDatabase
+          ? submittedSettings.repoFullName
+          : isDockerImage
+            ? dockerImageRepoFullName(submittedSettings.dockerImage)
+            : isFunction
+              ? undefined
+              : (submittedSettings.repoFullName.trim() ? submittedSettings.repoFullName : null),
+        repoUrl: isDatabase || isFunction ? undefined : isDockerImage ? "docker-image" : (submittedSettings.repoFullName.trim() ? undefined : submittedSettings.repoUrl.trim() || undefined),
         dockerImage: isDockerImage ? submittedSettings.dockerImage : undefined,
         branch: submittedSettings.branch,
-        rootDir: isDatabase || isDockerImage ? undefined : textOrNull(submittedSettings.rootDir),
-        installCommand: isDatabase || isDockerImage ? undefined : textOrNull(submittedSettings.installCommand),
-        buildCommand: isDatabase || isDockerImage ? undefined : textOrNull(submittedSettings.buildCommand),
-        startCommand: isDatabase || isDockerImage ? undefined : textOrNull(submittedSettings.startCommand),
-        staticOutput: isDatabase || isDockerImage ? undefined : textOrNull(submittedSettings.staticOutput),
-        buildMethod: isDatabase || isDockerImage ? undefined : submittedSettings.buildMethod,
-        dockerfilePath: isDatabase || isDockerImage ? undefined : textOrNull(submittedSettings.dockerfilePath),
+        rootDir: isDatabase || isDockerImage || isFunction ? undefined : textOrNull(submittedSettings.rootDir),
+        installCommand: isDatabase || isDockerImage || isFunction ? undefined : textOrNull(submittedSettings.installCommand),
+        buildCommand: isDatabase || isDockerImage || isFunction ? undefined : textOrNull(submittedSettings.buildCommand),
+        startCommand: isDatabase || isDockerImage || isFunction ? undefined : textOrNull(submittedSettings.startCommand),
+        staticOutput: isDatabase || isDockerImage || isFunction ? undefined : textOrNull(submittedSettings.staticOutput),
+        buildMethod: isDatabase || isDockerImage || isFunction ? undefined : submittedSettings.buildMethod,
+        dockerfilePath: isDatabase || isDockerImage || isFunction ? undefined : textOrNull(submittedSettings.dockerfilePath),
         runtimeMode: isDatabase ? undefined : submittedSettings.runtimeMode,
         internalPort: Number(submittedSettings.internalPort),
         databasePublicEnabled: isDatabase ? true : undefined,
@@ -562,7 +582,9 @@ export function ServicePageShell({
   }
 
   async function deleteService() {
-    if (!overview?.service || !window.confirm(`Delete service "${overview.service.name}"?`)) return;
+    if (!overview?.service) return;
+
+    setDeleteDialogOpen(false);
     setBusy("delete");
     try {
       await api.deleteService(serviceId);
@@ -578,8 +600,9 @@ export function ServicePageShell({
   const service = overview?.service;
   const isDatabase = service ? isDatabaseService(service) : false;
   const isDockerImage = service ? isDockerImageService(service) : false;
+  const isFunction = service ? isFunctionService(service) : false;
   const isWorker = service?.runtimeMode === "worker";
-  const isGitUrlSource = Boolean(service && !isDatabase && !isDockerImage && !settings.repoFullName && settings.repoUrl);
+  const isGitUrlSource = Boolean(service && !isDatabase && !isDockerImage && !isFunction && !settings.repoFullName && settings.repoUrl);
   const databaseEngine = service?.repoFullName?.startsWith("database:")
     ? service.repoFullName.slice("database:".length).toLowerCase()
     : "";
@@ -587,6 +610,7 @@ export function ServicePageShell({
   const hasSqlConsole = isDatabase && databaseEngine !== "redis" && databaseEngine !== "mongodb" && databaseEngine !== "mongo";
   const appTabs: Array<[ServiceTab, unknown]> = [
     ["overview", DashboardSquare02Icon],
+    ...(isFunction ? [["source", FileCodeIcon] as [ServiceTab, unknown]] : []),
     ["deployments", PackageIcon],
     ["logs", LeftToRightListStarIcon],
     ["environment", VariableIcon],
@@ -617,19 +641,21 @@ export function ServicePageShell({
   const viewportClass = "relative z-10 mx-auto flex h-full w-full max-w-7xl flex-col px-5 py-10 sm:px-6 lg:px-10";
   const panelClass = "flex min-h-0 w-full flex-1 flex-col";
   const tabButtonClass = (tab: ServiceTab) => `${chipClass(selectedTab === tab)} relative !py-1`;
-  const tabUsesContainedScroll = selectedTab === "deployments" || selectedTab === "logs" || selectedTab === "data" || selectedTab === "sql" || selectedTab === "backups";
+  const tabUsesContainedScroll = selectedTab === "deployments" || selectedTab === "logs" || selectedTab === "source" || selectedTab === "data" || selectedTab === "sql" || selectedTab === "backups";
   const contentClass = `mt-6 min-h-0 flex-1 ${tabUsesContainedScroll ? "overflow-hidden" : "overflow-y-auto"}`;
 
   useEffect(() => {
     if (!service) return;
     if ((isDatabase || isWorker) && selectedTab === "domains") {
       onTabChange("deployments");
+    } else if (!isFunction && selectedTab === "source") {
+      onTabChange("deployments");
     } else if (isDatabase && selectedTab === "sql" && !hasSqlConsole) {
       onTabChange("deployments");
     } else if (!isDatabase && (selectedTab === "data" || selectedTab === "sql" || selectedTab === "backups")) {
       onTabChange("deployments");
     }
-  }, [hasSqlConsole, isDatabase, isWorker, onTabChange, selectedTab, service]);
+  }, [hasSqlConsole, isDatabase, isFunction, isWorker, onTabChange, selectedTab, service]);
 
   if (!overview && overviewLoading && !error) return <ServicePageSkeleton />;
 
@@ -707,6 +733,15 @@ export function ServicePageShell({
 
               {selectedTab === "logs" ? <RuntimeLogsPanel logs={runtimeLogs} title="Live service logs" emptyLabel="No runtime logs yet." /> : null}
 
+              {selectedTab === "source" && isFunction && service ? (
+                <FunctionSourcePanel
+                  serviceId={serviceId}
+                  serviceName={service.name}
+                  busy={busy}
+                  doAction={doAction}
+                />
+              ) : null}
+
               {selectedTab === "data" && isDatabase ? (
                 databaseEngine === "redis" ? <RedisBrowserPanel serviceId={serviceId} /> : <DatabaseBrowserPanel serviceId={serviceId} />
               ) : null}
@@ -752,6 +787,11 @@ export function ServicePageShell({
                       <DockerImageServiceSettingsPanel
                         settings={settings}
                         hostPort={service?.hostPort}
+                        onChange={(nextSettings) => setSettings((current) => ({ ...current, ...nextSettings }))}
+                      />
+                    ) : isFunction ? (
+                      <FunctionServiceSettingsPanel
+                        settings={settings}
                         onChange={(nextSettings) => setSettings((current) => ({ ...current, ...nextSettings }))}
                       />
                     ) : (
@@ -953,7 +993,7 @@ export function ServicePageShell({
                         <AppIcon icon={FolderOpenIcon} size={16} />
                         Move service
                       </button>
-                      <button type="button" className={shellButton("danger")} onClick={() => void deleteService()} disabled={busy === "delete"}>
+                      <button type="button" className={shellButton("danger")} onClick={() => setDeleteDialogOpen(true)} disabled={busy === "delete"}>
                         <AppIcon icon={Delete02Icon} size={16} />
                         Delete service
                       </button>
@@ -1013,6 +1053,16 @@ export function ServicePageShell({
         busy={busy === "transfer"}
         onClose={() => setTransferOpen(false)}
         onTransfer={transferService}
+      />
+      <ConfirmationDialog
+        open={deleteDialogOpen && Boolean(service)}
+        title="Delete service?"
+        subject={service?.name}
+        description="This will permanently remove the service, its deployments, variables, domains, and related runtime resources."
+        confirmLabel="Delete service"
+        busy={busy === "delete"}
+        onClose={() => setDeleteDialogOpen(false)}
+        onConfirm={deleteService}
       />
       <RedeployRequiredToast
         visible={redeployToastVisible}

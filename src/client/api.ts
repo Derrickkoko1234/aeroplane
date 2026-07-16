@@ -1,4 +1,5 @@
 import type { AiProviderId, AiProviderModel } from "../shared/ai-providers";
+import type { FunctionRuntime } from "../shared/service-functions";
 export type { AiProviderId, AiProviderModel } from "../shared/ai-providers";
 
 export type Framework = {
@@ -24,6 +25,7 @@ export type Service = {
   repoFullName: null | string;
   repoUrl: string;
   dockerImage: null | string;
+  functionRuntime: null | FunctionRuntime;
   branch: string;
   rootDir: null | string;
   hasGithubToken: boolean;
@@ -641,6 +643,20 @@ export type ServiceOverview = {
   publicIp?: string;
 };
 
+export type FunctionSource = {
+  runtime: FunctionRuntime;
+  sourceCode: string;
+  fileName: string;
+  updatedAt: string;
+};
+
+export type FunctionCodeGeneration = {
+  sourceCode: string;
+  provider: AiProviderId;
+  providerName: string;
+  model: string;
+};
+
 export type GitHubRepo = {
   id: string;
   fullName: string;
@@ -766,6 +782,11 @@ export const api = {
     ),
   deleteProject: (projectId: string) => request(`/api/projects/${projectId}`, { method: "DELETE" }),
   serviceOverview: (serviceId: string) => request<ServiceOverview>(`/api/services/${serviceId}/overview`),
+  functionSource: (serviceId: string) => request<{ source: FunctionSource }>(`/api/services/${serviceId}/function-source`),
+  updateFunctionSource: (serviceId: string, body: { runtime?: FunctionRuntime; sourceCode?: string }) =>
+    request<{ source: FunctionSource; service: Service | null }>(`/api/services/${serviceId}/function-source`, { method: "PATCH", body: JSON.stringify(body) }),
+  generateFunctionSource: (serviceId: string, body: { prompt: string; runtime: FunctionRuntime; sourceCode?: string; providerId?: AiProviderId; model?: string }) =>
+    request<{ generation: FunctionCodeGeneration }>(`/api/services/${serviceId}/function-source/generate`, { method: "POST", body: JSON.stringify(body) }),
   updateService: (serviceId: string, body: unknown) =>
     request<{ service: Service }>(`/api/services/${serviceId}`, { method: "PATCH", body: JSON.stringify(body) }),
   transferService: (serviceId: string, body: { targetProjectId: string }) =>
@@ -865,6 +886,54 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ apiToken, projectId, config })
     }),
+  vercelTeams: (apiToken: string) =>
+    request<{ teams: Array<{ id: string; slug: string; name: string }> }>("/api/integrations/vercel/teams", {
+      method: "POST",
+      body: JSON.stringify({ apiToken })
+    }),
+  vercelProjects: (apiToken: string, teamId?: string) =>
+    request<{
+      projects: Array<{
+        id: string;
+        name: string;
+        framework: string | null;
+        kind: "git" | "unsupported";
+        sourceLabel: string;
+      }>;
+    }>("/api/integrations/vercel/projects", {
+      method: "POST",
+      body: JSON.stringify({ apiToken, teamId })
+    }),
+  vercelProjectDetails: (apiToken: string, projectId: string, teamId?: string) =>
+    request<{
+      details: {
+        id: string;
+        name: string;
+        framework: string | null;
+        rootDirectory: string | null;
+        buildCommand: string | null;
+        installCommand: string | null;
+        branch: string | null;
+        kind: "git" | "unsupported";
+        sourceLabel: string;
+        unsupportedReason: string | null;
+        targets: Array<"production" | "preview" | "development">;
+      };
+    }>("/api/integrations/vercel/project-details", {
+      method: "POST",
+      body: JSON.stringify({ apiToken, projectId, teamId })
+    }),
+  vercelImport: (apiToken: string, projectId: string, teamId: string | undefined, config?: unknown) =>
+    request<{
+      ok: boolean;
+      projectSlug: string;
+      importedCustomDomainCount?: number;
+      importedVariableCount?: number;
+      skippedSensitiveCount?: number;
+    }>("/api/integrations/vercel/import", {
+      method: "POST",
+      body: JSON.stringify({ apiToken, projectId, teamId, config })
+    }),
   systemSettings: () =>
     request<{
       settings: SystemSettings;
@@ -952,6 +1021,11 @@ export const api = {
     }),
   disconnectAiProvider: (providerId: AiProviderId) =>
     request<{ ok: boolean; ai: AiSettingsStatus }>(`/api/system/ai/providers/${providerId}`, { method: "DELETE" }),
+  githubManifest: (body: { redirectTo: "onboarding" | "settings"; organization?: string }) =>
+    request<{ postUrl: string; manifest: string }>("/api/github/manifest", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
   githubSettings: () => request<GitHubSettingsStatus>("/api/system/github"),
   updateGithubSettings: (body: {
     githubAccessToken?: string;
